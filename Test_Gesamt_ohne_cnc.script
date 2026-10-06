@@ -1,0 +1,550 @@
+# Digital Outputs
+CLOSE_GRIPPER = 0
+CLOSE_SMALL_FASTENER = 1
+CLOSE_BIG_FASTENER = 2
+ROBOT_FINISHED = 3
+INITIATE_TOOL_CHANGE = 4
+
+#####
+
+# Digital Inputs
+SENSOR_ALU = 3
+SENSOR_COPPER = 4
+MACHINE_FINISHED = 5
+
+#####
+
+NUM_RUNS_PER_TOOL = 5
+
+#####
+
+kraft_z = 5
+kraft_x = 5
+kraft_y = 5
+max_weg_z = 0.2
+v_z = 0.01
+v_x = 0.01
+v_y = 0.01
+
+
+stop_force = 5
+apporach_speed = 0.01
+
+def get_edge_point(dir, is_forward_movement):
+    
+    speed_vec=[0,0,0,0,0,0]
+    if (is_forward_movement == True):
+        speed_vec[dir] = apporach_speed
+    end
+    if (is_forward_movement == False):
+        speed_vec[dir] = -apporach_speed
+    end
+
+    zero_ftsensor()
+    aktforce = get_tcp_force()
+
+	while (norm(aktforce[dir]) < stop_force):
+		speedl(speed_vec,0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+    stopl(1)
+
+    pos = get_actual_tcp_pose()
+
+    return pos
+
+end
+
+
+def calculate_feature(edge1_p1,
+                      edge1_p2,
+                      edge2_p1,
+                      edge2_p2,
+                      top_p1,
+                      top_p2):
+
+    # ---------------------------------------------------------
+    # Erste Kante:
+    # Messung durch Bewegung in Basis-X.
+    # Die Richtung der Kante ergibt sich aus den beiden
+    # Messpositionen.
+    # ---------------------------------------------------------
+
+    local line1_dx = edge1_p2[0] - edge1_p1[0]
+    local line1_dy = edge1_p2[1] - edge1_p1[1]
+
+    # ---------------------------------------------------------
+    # Zweite Kante:
+    # Messung durch Bewegung in Basis-Y.
+    #
+    # Diese Kante wird als X-Achse des neuen Features verwendet.
+    # ---------------------------------------------------------
+
+    local line2_dx = edge2_p2[0] - edge2_p1[0]
+    local line2_dy = edge2_p2[1] - edge2_p1[1]
+
+    local line1_length = sqrt(
+        line1_dx * line1_dx +
+        line1_dy * line1_dy
+    )
+
+    local line2_length = sqrt(
+        line2_dx * line2_dx +
+        line2_dy * line2_dy
+    )
+
+    # Messpunkte dürfen nicht zu dicht beieinanderliegen
+    if (line1_length < 0.01):
+        popup(
+            "Messpunkte der ersten Kante liegen zu dicht zusammen.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    if (line2_length < 0.01):
+        popup(
+            "Messpunkte der zweiten Kante liegen zu dicht zusammen.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    # Richtungsvektoren normieren
+    line1_dx = line1_dx / line1_length
+    line1_dy = line1_dy / line1_length
+
+    line2_dx = line2_dx / line2_length
+    line2_dy = line2_dy / line2_length
+
+    # ---------------------------------------------------------
+    # Prüfen, ob die Kanten ungefähr rechtwinklig sind
+    # ---------------------------------------------------------
+
+    local edge_dot_product = (
+        line1_dx * line2_dx +
+        line1_dy * line2_dy
+    )
+
+    # Bei exakt 90 Grad ist das Skalarprodukt null.
+    # 0.15 entspricht ungefähr einer Abweichung von 8.6 Grad.
+    if (norm(edge_dot_product) > 0.15):
+        popup(
+            "Die gemessenen Kanten sind nicht rechtwinklig.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    # ---------------------------------------------------------
+    # Schnittpunkt der zwei Geraden berechnen
+    #
+    # Gerade 1:
+    # edge1_p1 + s * line1
+    #
+    # Gerade 2:
+    # edge2_p1 + t * line2
+    # ---------------------------------------------------------
+
+    local denominator = (
+        line1_dx * line2_dy -
+        line1_dy * line2_dx
+    )
+
+    if (norm(denominator) < 0.001):
+        popup(
+            "Die gemessenen Kanten sind nahezu parallel.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    local delta_x = edge2_p1[0] - edge1_p1[0]
+    local delta_y = edge2_p1[1] - edge1_p1[1]
+
+    local line1_parameter = (
+        delta_x * line2_dy -
+        delta_y * line2_dx
+    ) / denominator
+
+    local origin_x = (
+        edge1_p1[0] +
+        line1_parameter * line1_dx
+    )
+
+    local origin_y = (
+        edge1_p1[1] +
+        line1_parameter * line1_dy
+    )
+
+    # ---------------------------------------------------------
+    # Höhe der Arbeitsfläche
+    # ---------------------------------------------------------
+
+    local origin_z = (
+        top_p1[2] +
+        top_p2[2]
+    ) / 2.0
+
+    # ---------------------------------------------------------
+    # Winkel der Feature-X-Achse
+    #
+    # Die zweite Kante definiert die X-Achse.
+    # ---------------------------------------------------------
+
+    local feature_angle = atan2(line2_dy, line2_dx)
+
+    # Horizontales Feature:
+    # rx = 0
+    # ry = 0
+    # rz = Drehung um Basis-Z
+    local calculated_feature = p[
+        origin_x,
+        origin_y,
+        origin_z,
+        0.0,
+        0.0,
+        feature_angle
+    ]
+
+    textmsg("Ursprung X: ", origin_x)
+    textmsg("Ursprung Y: ", origin_y)
+    textmsg("Ursprung Z: ", origin_z)
+    textmsg("Feature-Winkel rad: ", feature_angle)
+    textmsg("Feature-Winkel Grad: ", r2d(feature_angle))
+    textmsg("Neues Feature: ", calculated_feature)
+
+    return calculated_feature
+end
+
+
+def calibrate_feature():
+    home = zp3
+    # Kante 1 Messen
+    movej(home, a=1.2, v=0.2)
+    movej(measure_point_1, a=1.2, v=0.2)
+
+    edge_point_1 = get_edge_point(1, True)
+
+    movel(measure_point_1, a=1.2, v=0.2)
+    movel(measure_point_2, a=1.2, v=0.2)
+
+    edge_point_2 = get_edge_point(1, True)
+
+    movel(measure_point_2, a=1.2, v=0.2)
+
+    movej(home, a=1.2, v=0.2)
+    movej(zp4, a=1.2, v=0.2)
+    # Kante 2 Messen
+    movej(measure_point_3, a=1.2, v=0.2)
+
+    edge2_point_1 = get_edge_point(0, False)
+    movel(measure_point_3, a=1.2, v=0.2)
+    movel(measure_point_4, a=1.2, v=0.2)
+    
+    edge2_point_2 = get_edge_point(0, False)
+
+    movel(measure_point_4, a=1.2, v=0.2)
+    movej(zp4, a=1.2, v=0.2)
+    movej(home, a=1.2, v=0.2)
+
+    # Höhe Messen
+    movel(measure_point_5, a=1.2, v=0.2)
+
+    top_point_1 = get_edge_point(2, False)
+
+    movel(measure_point_6, a=1.2, v=0.2)
+
+    top_point_2 = get_edge_point(2, False)
+
+    movej(home, a=1.2, v=0.2)
+
+    global Feature_cal = calculate_feature(
+        edge2_point_1,
+        edge2_point_2,
+        edge_point_1,
+        edge_point_2,
+        top_point_1,
+        top_point_2
+    )
+    
+    textmsg("Kalibrierung abgeschlossen.")
+    textmsg("Gespeichertes Feature: ", RQS_Werk_ref)
+end
+
+
+def close_fastener():
+# only close big fastender if small one is already closed
+	if get_digital_out(CLOSE_SMALL_FASTENER) == False:
+		set_digital_out(CLOSE_SMALL_FASTENER, True)
+	end
+	set_digital_out(CLOSE_BIG_FASTENER, True)
+
+end
+
+def trans_point(point, feature_ref, feature_calib):
+# Transforms point to calibrated Feature
+    transformed_point = pose_trans(feature_calib, pose_trans(pose_inv(feature_ref), point))
+
+    return transformed_point
+end
+
+def trans_all_points(ref_feature, calibrated_feature):
+
+	global p_auf_alu = trans_point(Aufnahme_alu,ref_feature, calibrated_feature)
+	global p_ein_alu = trans_point(Einlage_Alu,ref_feature, calibrated_feature)
+	global p_anf_auf_alu = trans_point(Anfahrt_Auf_alu, ref_feature, calibrated_feature)
+	global p_anf_ab_alu = trans_point(Anfahrt_Ab_alu, ref_feature,  calibrated_feature)
+	global p_auf_cop = trans_point(Aufnahme_cop, ref_feature, calibrated_feature)
+	global p_ein_cop = trans_point(Einlage_copper, ref_feature, calibrated_feature)
+	global p_anf_auf_cop = trans_point(Anfahrt_Auf_cop, ref_feature, calibrated_feature)
+	global p_anf_ab_cop = trans_point(Anfahrt_Ab_cop, ref_feature, calibrated_feature)
+	global p_auf_fert = trans_point(Aufnahme_fertig, ref_feature, calibrated_feature)
+	global p_ab_fert = trans_point(Ablage_fertig, ref_feature, calibrated_feature)
+	global p_anf_ab_fert = trans_point(Anfahrt_Ab_fert, ref_feature, calibrated_feature)
+	global p_zp1 = trans_point(zp1, ref_feature, calibrated_feature)
+	global p_zp2 = trans_point(zp2, ref_feature, calibrated_feature)
+	global p_zp3 = trans_point(zp2, ref_feature, calibrated_feature)
+
+end
+
+def trans_all_points_to_base(ref_feature):
+    feature = pose_inv(ref_feature)
+	global p_auf_alu = trans_point(feature, Aufnahme_alu)
+	global p_ein_alu = trans_point(feature, Einlage_Alu)
+	global p_anf_auf_alu = trans_point(feature, Anfahrt_Auf_alu)
+	global p_anf_ab_alu = trans_point(feature, Anfahrt_Ab_alu)
+	global p_auf_cop = trans_point(feature, Aufnahme_cop)
+	global p_ein_cop = trans_point(feature, Einlage_copper)
+	global p_anf_auf_cop = trans_point(feature, Anfahrt_Auf_cop)
+	global p_anf_ab_cop = trans_point(feature, Anfahrt_Ab_cop)
+	global p_auf_fert = trans_point(feature, Aufnahme_fertig)
+	global p_ab_fert = trans_point(feature, Ablage_fertig)
+	global p_anf_ab_fert = trans_point(feature, Anfahrt_Ab_fert)
+	global p_zp1 = trans_point(feature, zp1)
+	global p_zp2 = trans_point(feature, zp2)
+	global p_zp3 = trans_point(feature, zp2)
+
+end
+
+def pickup():
+	zero_ftsensor()
+              aktforce = get_tcp_force()
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1.0)
+	set_digital_out(CLOSE_GRIPPER,True)
+	sleep(2)
+	speedl([0,0,0.03,0,0,0],0.2,1)
+	stopl(1.0)
+	sleep(2)
+end
+
+def set_down_alu():
+	zero_ftsensor()
+	aktforce = get_tcp_force()
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1)
+               zero_ftsensor()
+	sleep(2)
+
+	while (norm(aktforce[1]) < kraft_y):
+		speedl([0,v_y,0,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+	
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1)
+	sleep(2)
+
+	while (norm(aktforce[0]) < kraft_x):
+		speedl([v_x,0,0,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+	
+	stopl(1)
+	set_digital_out(CLOSE_GRIPPER,False)
+	sleep(1)
+	speedl([0,0,0.02,0,0,0],0.2,1)
+	
+	sleep(3)
+end
+
+def set_down_copper():
+	zero_ftsensor()
+	aktforce = get_tcp_force()
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1)
+              zero_ftsensor()
+	sleep(2)
+
+	while (norm(aktforce[1]) < kraft_y):
+		speedl([0,v_y,0,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1)
+	sleep(2)
+
+	while (norm(aktforce[0]) < kraft_x):
+		speedl([-v_x,0,0,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+	stopl(1)
+	sleep(1)
+	set_digital_out(CLOSE_GRIPPER,False)
+	
+	sleep(1)
+	speedl([0,0,0.02,0,0,0],0.2,1)
+	sleep(3)
+end
+
+def pickup_finished():
+	zero_ftsensor()
+    aktforce = get_tcp_force()
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1.0)
+	set_digital_out(CLOSE_GRIPPER,True)
+	sleep(2)
+	speedl([0,0,0.03,0,0,0],0.2,0.5)
+	stopl(1.0)
+end
+
+def set_down_finished():
+	zero_ftsensor()
+        aktforce = get_tcp_force()
+	while (norm(aktforce[2]) < kraft_z):
+		speedl([0,0,-v_z,0,0,0],0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1.0)
+	set_digital_out(CLOSE_GRIPPER,False)
+	sleep(2)
+	speedl([0,0,0.03,0,0,0],0.2,2)
+	stopl(1.0)
+	sleep(2)
+end
+
+def load_parts():
+# loads both alu and copper
+	movel(p_zp1, a=1.2, v=0.2)
+	movel(p_anf_auf_alu, a=1.2, v=0.2)
+	movel(p_auf_alu, a=1.2, v=0.05)
+	pickup()
+	movel(p_anf_auf_alu, a=1.2, v=0.2)
+	movel(p_zp2, a=1.2, v=0.2)
+	movel(p_zp1, a=1.2, v=0.2)
+	sleep(1)
+	movel(p_anf_ab_alu, a=1.2, v=0.2)
+	movel(p_ein_alu, a=1.2, v=0.05)
+	set_down_alu()
+	movel(p_anf_ab_alu, a=1.2, v=0.1)
+	if get_digital_in(SENSOR_ALU) == False:
+		set_digital_out(CLOSE_SMALL_FASTENER,True)
+	else:
+		popup("Einlage nicht erkannt", "Warnung", warning=True, error=False, blocking=True)
+	end
+
+	movel(p_zp1, a=1.2, v=0.2)
+	sleep(0.5)
+
+	movel(p_zp2, a=1.2, v=0.2)
+	movel(p_anf_auf_cop, a=1.2, v=0.2)
+	movel(p_auf_cop, a=1.2, v=0.05)
+	pickup()
+	movel(p_anf_auf_cop, a=1.2, v=0.2)
+	movel(p_zp2, a=1.2, v=0.2)
+	movel(p_zp1, a=1.2, v=0.2)
+
+	sleep(0.5)
+	movel(p_anf_ab_cop, a=1.2, v=0.2)
+	movel(p_ein_cop, a=1.2, v=0.05)
+	set_down_copper()
+	movel(p_anf_ab_cop, a=1.2, v=0.1)
+	if get_digital_in(SENSOR_COPPER) == False:
+		close_fastener()
+	else:
+		popup("Einlage nicht erkannt", "Warnung", warning=True, error=False, blocking=True)
+	end
+
+	movel(p_zp1, a=1.2, v=0.2)
+end
+
+def unload_finished_part():
+	#set_digital_out(CLOSE_BIG_FASTENER, False)
+	#set_digital_out(CLOSE_SMALL_FASTENER, False)
+	movel(p_anf_ab_alu, a=1.2, v=0.2)
+	movel(p_auf_fert, a=1.2, v=0.05)
+	pickup_finished()
+	movel(p_anf_ab_alu, a=1.2, v=0.2)
+	movel(p_zp1, a=1.2, v=0.2)
+	#movel(p_zp2, a=1.2, v=0.2)
+	movel(p_anf_ab_fert, a=1.2, v=0.2)
+	movel(p_ab_fert, a=1.2, v=0.2)
+	set_down_finished()
+	movel(p_anf_ab_fert, a=1.2, v=0.2)
+	movel(p_zp2, a=1.2, v=0.2)
+	movel(p_zp1, a=1.2, v=0.2)
+end
+
+
+
+def main():
+
+	need_calib = request_boolean_from_primary_client("Kalibrierung durchführen?")
+	if need_calib == True:
+		calibrate_feature()
+		trans_all_points(RQS_Werk_ref, Feature_cal)
+	else:
+		trans_all_points(RQS_Werk_ref, RQS_Werk_ref)
+	end
+
+	num_parts = request_integer_from_primary_client("Anzahl zu bearbeitender Teile: ")
+	i = 0
+	tool_i = 0
+
+    while(i<num_parts):
+        #load_parts()
+        sleep(5)
+        set_digital_out(CLOSE_BIG_FASTENER, False)
+        sleep(2)
+        set_digital_out(CLOSE_SMALL_FASTENER, False)
+        sleep(5)
+        unload_finished_part()
+        sleep(10)
+    end
+end
+
+main()

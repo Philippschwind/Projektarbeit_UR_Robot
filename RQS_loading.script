@@ -1,0 +1,542 @@
+# Digital Outputs
+CLOSE_GRIPPER = 0
+CLOSE_SMALL_FASTENER = 1
+CLOSE_BIG_FASTENER = 2
+ROBOT_FINISHED = 4
+INITIATE_TOOL_CHANGE = 5
+
+#####
+
+# Digital Inputs
+SENSOR_STEEL = 3
+SENSOR_COPPER = 4
+TOOL_CHANGE_FINISHED = 5
+MACHINE_FINISHED = 6
+
+#####
+
+NUM_RUNS_PER_TOOL = 5
+
+#####
+
+speed_move = 0.8
+speed_slow = 0.05
+
+kraft_z = 5
+kraft_x = 5
+kraft_y = 5
+max_weg_approach = 0.5
+v_z = 0.01
+v_x = 0.01
+v_y = 0.01
+
+
+stop_force = 5
+apporach_speed = 0.01
+
+def get_edge_point(dir, is_forward_movement):
+    
+    speed_vec=[0,0,0,0,0,0]
+    if (is_forward_movement == True):
+        speed_vec[dir] = apporach_speed
+    end
+    if (is_forward_movement == False):
+        speed_vec[dir] = -apporach_speed
+    end
+
+    zero_ftsensor()
+    aktforce = get_tcp_force()
+
+	while (norm(aktforce[dir]) < stop_force):
+		speedl(speed_vec,0.1,0.05)
+		aktforce = get_tcp_force()
+	end
+    stopl(1)
+
+    pos = get_actual_tcp_pose()
+
+    return pos
+
+end
+
+
+def calculate_feature(edge1_p1,
+                      edge1_p2,
+                      edge2_p1,
+                      edge2_p2,
+                      top_p1,
+                      top_p2):
+
+    # ---------------------------------------------------------
+    # Erste Kante:
+    # Messung durch Bewegung in Basis-X.
+    # Die Richtung der Kante ergibt sich aus den beiden
+    # Messpositionen.
+    # ---------------------------------------------------------
+
+    local line1_dx = edge1_p2[0] - edge1_p1[0]
+    local line1_dy = edge1_p2[1] - edge1_p1[1]
+
+    # ---------------------------------------------------------
+    # Zweite Kante:
+    # Messung durch Bewegung in Basis-Y.
+    #
+    # Diese Kante wird als X-Achse des neuen Features verwendet.
+    # ---------------------------------------------------------
+
+    local line2_dx = edge2_p2[0] - edge2_p1[0]
+    local line2_dy = edge2_p2[1] - edge2_p1[1]
+
+    local line1_length = sqrt(
+        line1_dx * line1_dx +
+        line1_dy * line1_dy
+    )
+
+    local line2_length = sqrt(
+        line2_dx * line2_dx +
+        line2_dy * line2_dy
+    )
+
+    # Messpunkte dürfen nicht zu dicht beieinanderliegen
+    if (line1_length < 0.01):
+        popup(
+            "Messpunkte der ersten Kante liegen zu dicht zusammen.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    if (line2_length < 0.01):
+        popup(
+            "Messpunkte der zweiten Kante liegen zu dicht zusammen.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    # Richtungsvektoren normieren
+    line1_dx = line1_dx / line1_length
+    line1_dy = line1_dy / line1_length
+
+    line2_dx = line2_dx / line2_length
+    line2_dy = line2_dy / line2_length
+
+    # ---------------------------------------------------------
+    # Prüfen, ob die Kanten ungefähr rechtwinklig sind
+    # ---------------------------------------------------------
+
+    local edge_dot_product = (
+        line1_dx * line2_dx +
+        line1_dy * line2_dy
+    )
+
+    # Bei exakt 90 Grad ist das Skalarprodukt null.
+    # 0.15 entspricht ungefähr einer Abweichung von 8.6 Grad.
+    if (norm(edge_dot_product) > 0.15):
+        popup(
+            "Die gemessenen Kanten sind nicht rechtwinklig.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    # ---------------------------------------------------------
+    # Schnittpunkt der zwei Geraden berechnen
+    #
+    # Gerade 1:
+    # edge1_p1 + s * line1
+    #
+    # Gerade 2:
+    # edge2_p1 + t * line2
+    # ---------------------------------------------------------
+
+    local denominator = (
+        line1_dx * line2_dy -
+        line1_dy * line2_dx
+    )
+
+    if (norm(denominator) < 0.001):
+        popup(
+            "Die gemessenen Kanten sind nahezu parallel.",
+            title="Kalibrierfehler",
+            warning=True,
+            error=True,
+            blocking=True
+        )
+        halt
+    end
+
+    local delta_x = edge2_p1[0] - edge1_p1[0]
+    local delta_y = edge2_p1[1] - edge1_p1[1]
+
+    local line1_parameter = (
+        delta_x * line2_dy -
+        delta_y * line2_dx
+    ) / denominator
+
+    local origin_x = (
+        edge1_p1[0] +
+        line1_parameter * line1_dx
+    )
+
+    local origin_y = (
+        edge1_p1[1] +
+        line1_parameter * line1_dy
+    )
+
+    # ---------------------------------------------------------
+    # Höhe der Arbeitsfläche
+    # ---------------------------------------------------------
+
+    local origin_z = (
+        top_p1[2] +
+        top_p2[2]
+    ) / 2.0
+
+    # ---------------------------------------------------------
+    # Winkel der Feature-X-Achse
+    #
+    # Die zweite Kante definiert die X-Achse.
+    # ---------------------------------------------------------
+
+    local feature_angle = atan2(line2_dy, line2_dx)
+
+    # Horizontales Feature:
+    # rx = 0
+    # ry = 0
+    # rz = Drehung um Basis-Z
+    local calculated_feature = p[
+        origin_x,
+        origin_y,
+        origin_z,
+        0.0,
+        0.0,
+        feature_angle
+    ]
+
+    textmsg("Ursprung X: ", origin_x)
+    textmsg("Ursprung Y: ", origin_y)
+    textmsg("Ursprung Z: ", origin_z)
+    textmsg("Feature-Winkel rad: ", feature_angle)
+    textmsg("Feature-Winkel Grad: ", r2d(feature_angle))
+    textmsg("Neues Feature: ", calculated_feature)
+
+    return calculated_feature
+end
+
+
+def calibrate_feature():
+    home = zp3
+    # Kante 1 Messen
+    movej(home, a=1.2, v=speed_move)
+    movej(measure_point_1, a=1.2, v=speed_move)
+
+    edge_point_1 = get_edge_point(1, True)
+
+    movel(measure_point_1, a=1.2, v=speed_move)
+    movel(measure_point_2, a=1.2, v=speed_move)
+
+    edge_point_2 = get_edge_point(1, True)
+
+    movel(measure_point_2, a=1.2, v=speed_move)
+
+    movej(home, a=1.2, v=speed_move)
+    movej(zp4, a=1.2, v=speed_move)
+    # Kante 2 Messen
+    movej(measure_point_3, a=1.2, v=speed_move)
+
+    edge2_point_1 = get_edge_point(0, False)
+    movel(measure_point_3, a=1.2, v=speed_move)
+    movel(measure_point_4, a=1.2, v=speed_move)
+    
+    edge2_point_2 = get_edge_point(0, False)
+
+    movel(measure_point_4, a=1.2, v=speed_move)
+    movej(zp4, a=1.2, v=speed_move)
+    movej(home, a=1.2, v=speed_move)
+
+    # Höhe Messen
+    movel(measure_point_5, a=1.2, v=speed_move)
+
+    top_point_1 = get_edge_point(2, False)
+
+    movel(measure_point_6, a=1.2, v=speed_move)
+
+    top_point_2 = get_edge_point(2, False)
+
+    movej(home, a=1.2, v=speed_move)
+
+    global Feature_cal = calculate_feature(
+        edge2_point_1,
+        edge2_point_2,
+        edge_point_1,
+        edge_point_2,
+        top_point_1,
+        top_point_2
+    )
+    
+    textmsg("Kalibrierung abgeschlossen.")
+    textmsg("Gespeichertes Feature: ", RQS_Werk_ref)
+end
+
+
+def close_fastener():
+# only close big fastender if small one is already closed
+	if get_digital_out(CLOSE_SMALL_FASTENER) == False:
+		set_digital_out(CLOSE_SMALL_FASTENER, True)
+	end
+	set_digital_out(CLOSE_BIG_FASTENER, True)
+
+end
+
+def trans_point(point, feature_ref, feature_calib):
+# Transforms point to calibrated Feature
+    transformed_point = pose_trans(feature_calib, pose_trans(pose_inv(feature_ref), point))
+
+    return transformed_point
+end
+
+def trans_all_points(ref_feature, calibrated_feature):
+
+	global p_auf_steel = trans_point(Aufnahme_alu,ref_feature, calibrated_feature)
+	global p_ein_steel = trans_point(Einlage_Alu,ref_feature, calibrated_feature)
+	global p_anf_auf_steel = trans_point(Anfahrt_Auf_alu, ref_feature, calibrated_feature)
+	global p_anf_ab_steel = trans_point(Anfahrt_Ab_alu, ref_feature,  calibrated_feature)
+	global p_auf_cop = trans_point(Aufnahme_cop, ref_feature, calibrated_feature)
+	global p_ein_cop = trans_point(Einlage_copper, ref_feature, calibrated_feature)
+	global p_anf_auf_cop = trans_point(Anfahrt_Auf_cop, ref_feature, calibrated_feature)
+	global p_anf_ab_cop = trans_point(Anfahrt_Ab_cop, ref_feature, calibrated_feature)
+	global p_auf_fert = trans_point(Aufnahme_fertig, ref_feature, calibrated_feature)
+	global p_ab_fert = trans_point(Ablage_fertig, ref_feature, calibrated_feature)
+	global p_anf_ab_fert = trans_point(Anfahrt_Ab_fert, ref_feature, calibrated_feature)
+	global p_zp1 = trans_point(zp1, ref_feature, calibrated_feature)
+	global p_zp2 = trans_point(zp2, ref_feature, calibrated_feature)
+	global p_zp3 = trans_point(zp2, ref_feature, calibrated_feature)
+
+end
+
+def force_move(axis, velocity, force_limit, max_distance, error_text):
+	# Fährt in Basiskoordinaten bis zum Kraftlimit; bricht bei Überschreitung
+	# des maximalen Suchwegs ab. axis: 0=X, 1=Y, 2=Z.
+	zero_ftsensor()
+	sleep(0.05)
+	start_pose = get_actual_tcp_pose()
+	aktforce = get_tcp_force()
+
+	while norm(aktforce[axis]) < force_limit:
+		akt_pose = get_actual_tcp_pose()
+		if norm(akt_pose[axis] - start_pose[axis]) >= max_distance:
+			stopl(1.0)
+			popup(error_text, "Kraftsuche abgebrochen", warning=False, error=True, blocking=True)
+			halt
+		end
+
+		if axis == 0:
+			speedl([velocity,0,0,0,0,0], 0.1, 0.05)
+		elif axis == 1:
+			speedl([0,velocity,0,0,0,0], 0.1, 0.05)
+		else:
+			speedl([0,0,velocity,0,0,0], 0.1, 0.05)
+		end
+
+		aktforce = get_tcp_force()
+	end
+
+	stopl(1.0)
+end
+
+def pickup():
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Aufnehmen erkannt")
+
+	set_digital_out(CLOSE_GRIPPER,True)
+	sleep(1)
+	speedl([0,0,0.03,0,0,0],0.2,1)
+	stopl(1.0)
+	sleep(0.5)
+end
+
+def set_down_steel():
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+    force_move(1, v_y, kraft_y, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+	force_move(0, v_x, kraft_x, max_weg_approach, "Kein Kontakt beim Aufnehmen erkannt")
+	sleep(0.5)
+	set_digital_out(CLOSE_GRIPPER,False)
+	sleep(1)
+	speedl([0,0,0.02,0,0,0],0.2,1)
+	
+	sleep(1)
+end
+
+def set_down_copper():
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+    force_move(1, v_y, kraft_y, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Ablegen erkannt")
+	sleep(0.5)
+	force_move(0, -v_x, kraft_x, max_weg_approach, "Kein Kontakt beim Aufnehmen erkannt")
+	sleep(0.5)
+	set_digital_out(CLOSE_GRIPPER,False)
+	speedl([0,0,0.02,0,0,0],0.2,1)
+	sleep(1)
+end
+
+def pickup_finished():
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Aufnehmen erkannt")
+	set_digital_out(CLOSE_GRIPPER,True)
+	sleep(1)
+	speedl([0,0,0.03,0,0,0],0.2,0.5)
+	stopl(1.0)
+end
+
+def set_down_finished():
+	force_move(2, -v_z, kraft_z, max_weg_approach, "Kein Kontakt beim Aufnehmen erkannt")
+	set_digital_out(CLOSE_GRIPPER,False)
+	sleep(1)
+	speedl([0,0,0.03,0,0,0],0.2,2)
+	stopl(1.0)
+	sleep(0.5)
+end
+
+def load_parts():
+# loads both steel and copper plates
+	movel(p_zp1, a=1.2, v=speed_move)
+	movel(p_anf_auf_steel, a=1.2, v=speed_move)
+	movel(p_auf_steel, a=1.2, v=speed_slow)
+	pickup()
+	movel(p_anf_auf_steel, a=1.2, v=speed_move)
+	movel(p_zp2, a=1.2, v=speed_move)
+	movel(p_zp1, a=1.2, v=speed_move)
+	movel(p_anf_ab_steel, a=1.2, v=speed_move)
+	movel(p_ein_steel, a=1.2, v=speed_slow)
+	set_down_steel()
+	movel(p_anf_ab_steel, a=1.2, v=speed_slow)
+	if get_digital_in(SENSOR_STEEL) == False:
+		set_digital_out(CLOSE_SMALL_FASTENER,True)
+	else:
+		popup("Einlage nicht erkannt", "Warnung", warning=True, error=False, blocking=True)
+	end
+
+	movel(p_zp1, a=1.2, v=speed_move)
+	sleep(0.5)
+
+	movel(p_zp2, a=1.2, v=speed_move)
+	movel(p_anf_auf_cop, a=1.2, v=speed_move)
+	movel(p_auf_cop, a=1.2, v=speed_slow)
+	pickup()
+	movel(p_anf_auf_cop, a=1.2, v=speed_move)
+	movel(p_zp2, a=1.2, v=speed_move)
+	movel(p_zp1, a=1.2, v=speed_move)
+
+	sleep(0.5)
+	movel(p_anf_ab_cop, a=1.2, v=speed_move)
+	movel(p_ein_cop, a=1.2, v=speed_slow)
+	set_down_copper()
+	movel(p_anf_ab_cop, a=1.2, v=speed_slow)
+	if get_digital_in(SENSOR_COPPER) == False:
+		close_fastener()
+	else:
+		popup("Einlage nicht erkannt", "Warnung", warning=True, error=False, blocking=True)
+	end
+
+	movel(p_zp1, a=1.2, v=speed_move)
+end
+
+def unload_finished_part():
+	movel(p_anf_ab_steel, a=1.2, v=speed_move)
+	movel(p_auf_fert, a=1.2, v=speed_slow)
+	pickup_finished()
+	movel(p_anf_ab_steel, a=1.2, v=speed_move)
+	movel(p_zp1, a=1.2, v=speed_move)
+	#movel(p_zp2, a=1.2, v=speed_move)
+	movel(p_anf_ab_fert, a=1.2, v=speed_move)
+	movel(p_ab_fert, a=1.2, v=speed_move)
+	set_down_finished()
+	movel(p_anf_ab_fert, a=1.2, v=speed_move)
+	movel(p_zp2, a=1.2, v=speed_move)
+	movel(p_zp1, a=1.2, v=speed_move)
+end
+
+
+
+def main():
+
+	local need_calib = request_boolean_from_primary_client("Kalibrierung durchführen?")
+	
+	if need_calib == True:
+		calibrate_feature()
+		# Transforms all points to new calibrated Feature
+		trans_all_points(RQS_Werk_ref, Feature_cal)
+        movej(p_zp1, a=1.2, v=speed_move)
+	else:
+		# Identical Ref- and Calib Feature -> No change of coordinates
+		trans_all_points(RQS_Werk_ref, RQS_Werk_ref)
+	end
+
+	num_parts = request_integer_from_primary_client("Anzahl zu bearbeitender Teile: ")
+	i = 0
+	tool_i = 0
+
+	popup(
+		"Anzahl Teile: " + to_str(num_parts) + 
+		"\nArbeitsbereich und RQS Maschine prüfen und Programm starten.",
+		title="Programmstart",
+		warning=False,
+		error=False,
+		blocking=True
+	)
+
+    while(i<num_parts):
+		if tool_i < NUM_RUNS_PER_TOOL:
+			load_parts()
+			tool_i = tool_i + 1
+		else:
+		# Wait for tool change
+			set_digital_out(INITIATE_TOOL_CHANGE, True)
+			set_digital_out(ROBOT_FINISHED, True)
+			sleep(2)
+			while(get_digital_in(TOOL_CHANGE_FINISHED) == False):
+				sleep(0.5)
+                set_digital_out(INITIATE_TOOL_CHANGE, False)
+			    set_digital_out(ROBOT_FINISHED, False)
+			end
+            set_digital_out(INITIATE_TOOL_CHANGE, False)
+			set_digital_out(ROBOT_FINISHED, False)
+			tool_i = 1
+			load_parts()
+		end
+		
+		set_digital_out(ROBOT_FINISHED, True)
+		sleep(2)
+		while(get_digital_in(MACHINE_FINISHED) == False):
+			sleep(0.5)
+            set_digital_out(ROBOT_FINISHED, False)
+		end
+
+		set_digital_out(ROBOT_FINISHED, False)
+
+		# Open fastenders. Needs a buffer time to make sure the big fastender is fully open
+        set_digital_out(CLOSE_BIG_FASTENER, False)
+        sleep(1.5)
+        set_digital_out(CLOSE_SMALL_FASTENER, False)
+
+		unload_finished_part()
+
+		i = i+1
+        end
+end
+
+main()

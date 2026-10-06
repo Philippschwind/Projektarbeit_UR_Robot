@@ -1,0 +1,13 @@
+def teach_new_point(feature_ref, feature_calib):
+  local current_pose = get_actual_tcp_pose()
+  transformed_point = pose_trans(feature_ref, pose_trans(pose_inv(feature_calib), current_pose))
+  textmsg("Transformed Point: ", transformed_point)
+  return local_pose
+end
+
+
+feature_ref = RQS_Werkbank_ref
+feature_calib = RQS_Werkbank_calib
+global approach_1_alu = trach_local_point(feature)
+
+sleep(10)
